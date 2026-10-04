@@ -16,6 +16,11 @@
 
 """Go analysis package.
 
-``GoAnalysis`` (the public facade) is exported here once it lands; for now this package carries
-:class:`~cldk.analysis.go.backend.GoAnalysisBackend` and its concrete backends.
+Exports the public :class:`~cldk.analysis.go.go_analysis.GoAnalysis` facade; the
+:class:`~cldk.analysis.go.backend.GoAnalysisBackend` ABC and its two concrete backends live
+alongside it.
 """
+
+from cldk.analysis.go.go_analysis import GoAnalysis
+
+__all__ = ["GoAnalysis"]
