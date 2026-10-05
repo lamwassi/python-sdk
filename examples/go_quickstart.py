@@ -59,13 +59,13 @@ def _short(node_id: str) -> str:
     return node_id.rstrip("/").split("/")[-1]
 
 
-def run_local(project_path: str, level: AnalysisLevel) -> None:
+def run_local(project_path: str, level: AnalysisLevel, eager: bool) -> None:
     """The in-process backend: run cango over the module and query the parsed analysis.json."""
     print("=" * 72)
-    print(f"LOCAL backend (cango) — {project_path}  [level: {level.value}]")
+    print(f"LOCAL backend (cango) — {project_path}  [level: {level.value}{', eager' if eager else ''}]")
     print("=" * 72)
 
-    analysis = CLDK.go(project_path=project_path, analysis_level=level)
+    analysis = CLDK.go(project_path=project_path, analysis_level=level, eager=eager)
 
     types = analysis.get_types()
     functions = analysis.get_functions()
@@ -164,9 +164,18 @@ def main() -> int:
         "(default). cango produces only 1 and 2; Go has no L3/L4. The Neo4j graph is always "
         "full-depth, so this flag affects the local run only.",
     )
+    parser.add_argument(
+        "-e",
+        "--eager",
+        action="store_true",
+        help="force a fresh cango run, ignoring any cached analysis.json under "
+        "<project>/.codeanalyzer/go. Use this if a cache from an earlier, shallower level (e.g. a "
+        "prior -a 1 run) is being reused for a deeper request — the cache is reused by existence, "
+        "not by level.",
+    )
     args = parser.parse_args()
 
-    run_local(args.project_path, _LEVELS[args.level])
+    run_local(args.project_path, _LEVELS[args.level], args.eager)
     run_neo4j()
     return 0
 
