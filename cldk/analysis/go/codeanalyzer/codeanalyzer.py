@@ -35,6 +35,7 @@ from typing import Dict, List, Union
 import networkx as nx
 
 from cldk.analysis.commons.backend_config import cache_subdir
+from cldk.analysis.commons.levels import analyzer_level
 from cldk.analysis.go.backend import ARTIFACT_LAYER_UNAVAILABLE, GoAnalysisBackend
 from cldk.models.go import (
     GoAnalysis,
@@ -48,11 +49,6 @@ from cldk.models.go import (
 )
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
-
-#: cango caps at level 2 (symbol table + resolver call graph); it has no L3/L4. The SDK's
-#: AnalysisLevel enum carries string values, so map to the integer -a flag explicitly.
-_LEVEL_FLAG = {"symbol_table": 1, "call_graph": 2}
-
 
 class GoCodeanalyzer(GoAnalysisBackend):
     """Run ``cango`` and answer queries over the parsed ``analysis.json``.
@@ -80,7 +76,10 @@ class GoCodeanalyzer(GoAnalysisBackend):
         self.analysis_level = analysis_level
         self.eager_analysis = eager_analysis
         self.target_files = target_files
-        self.analysis: GoAnalysis = self._init_codeanalyzer(_LEVEL_FLAG.get(analysis_level, 1))
+        # analyzer_level maps the AnalysisLevel enum/name/value to its integer, raising on an
+        # unknown level rather than silently defaulting to 1 (the bug a hand-rolled dict caused).
+        # cango has no L3/L4, so _argv caps the result at 2.
+        self.analysis: GoAnalysis = self._init_codeanalyzer(analyzer_level(analysis_level))
         self.application: GoApplication = self.analysis.application
         self.application_name: str = self.application.id.removeprefix("can://")
         self._call_graph: nx.DiGraph | None = None

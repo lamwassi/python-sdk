@@ -43,6 +43,32 @@ def go_analysis(tmp_path, monkeypatch):
     )
 
 
+# -----[ regression: the requested analysis level actually reaches cango ]-----
+@pytest.mark.parametrize(
+    "level, expected_a",
+    [(AnalysisLevel.symbol_table, "1"), (AnalysisLevel.call_graph, "2")],
+)
+def test_requested_level_is_passed_to_cango(level, expected_a, tmp_path, monkeypatch):
+    """A hand-rolled name->int dict silently defaulted every level to 1 (the enum's value is
+    'call graph', not 'call_graph'), so `-a 2` never reached cango and no project ever got a call
+    graph. Assert the integer `-a` flag matches the requested level."""
+    captured = {}
+
+    def _capture(cmd, *args, **kwargs):
+        if "-a" in cmd:
+            captured["a"] = cmd[cmd.index("-a") + 1]
+        out = Path(cmd[cmd.index("-o") + 1]) if "-o" in cmd else None
+        if out:
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "analysis.json").write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+        return MagicMock(stdout=FIXTURE.read_text(encoding="utf-8"), returncode=0)
+
+    monkeypatch.setenv("CODEANALYZER_GO_BIN", "cango")
+    monkeypatch.setattr("subprocess.run", _capture)
+    CLDK.go(project_path=str(tmp_path), analysis_level=level, eager=True, backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)))
+    assert captured.get("a") == expected_a
+
+
 # -----[ the public surface is type-centric, never class ]-----
 def test_public_surface_has_no_class_named_method():
     """SDK1: Go is class-less. No public facade method mentions 'class'."""
