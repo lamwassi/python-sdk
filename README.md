@@ -73,6 +73,7 @@ from cldk import CLDK
 analysis = CLDK.java(project_path="/path/to/java/project")
 # analysis = CLDK.python(project_path="/path/to/python/project")
 # analysis = CLDK.typescript(project_path="/path/to/ts/project")
+# analysis = CLDK.go(project_path="/path/to/go/module")  # see the Go Quick Start below
 ```
 
 Walk the symbol table and pull method bodies:
@@ -119,17 +120,75 @@ classes = analysis.get_all_classes()
 
 > **`project_path` with the Neo4j backend:** it's **optional** — the graph is read over Bolt, so you can omit it as shown above. CLDK validates `project_path` only when you actually pass one (it must exist and be a directory, on every backend); passing `None` skips that check. Supply a real path only if you also need on-disk source access (e.g. file content/snippets) alongside the graph.
 
-> **Deprecation:** the old `CLDK(language="java").analysis(...)` entry point still works as a thin compatibility shim (it emits a `DeprecationWarning`). Prefer the `CLDK.java()` / `CLDK.python()` / `CLDK.typescript()` factory methods.
+### Go Quick Start
+
+Go is CLDK's first **type-centric, class-less** facade. A Go `type` is a `struct` or an
+`interface` (never a class), and package-level **functions** are kept distinct from receiver
+**methods** — so the Go facade is `get_types` / `get_functions` / `get_methods_of`, not
+`get_classes`. Point the facade at a Go **module** (a directory with a `go.mod`):
+
+```python
+from cldk import CLDK
+from cldk.analysis import AnalysisLevel
+
+analysis = CLDK.go(
+    project_path="/path/to/go/module",
+    analysis_level=AnalysisLevel.call_graph,  # level 1 (symbols) or 2 (+ call graph); Go has no L3/L4
+)
+
+# Walk the types (structs + interfaces) and their receiver methods. Types, methods and fields are
+# addressed by the type's durable `can://` id (a Go type has no unique short name across packages).
+for type_id, go_type in analysis.get_types().items():
+    print(f"{go_type.kind} {type_id}")
+    for sig, method in analysis.get_methods_of(type_id).items():
+        print(f"  method {sig}")
+        print(analysis.get_source(method.id))  # the method's source, sliced from its module
+
+# Package-level functions are separate from methods — no "module-as-class" hack:
+for sig, fn in analysis.get_functions().items():
+    print(f"func {sig}")
+
+# Who calls whom (full edges with provenance and weight), keyed on the callable id:
+call_graph = analysis.get_call_graph()  # a networkx.DiGraph
+for func_id in analysis.get_functions():
+    for edge in analysis.get_callees(func_id):
+        print(f"{edge.src} -> {edge.dst}  ({', '.join(edge.prov)}, weight={edge.weight})")
+```
+
+Query a pre-populated Go graph **read-only** over Neo4j the same way as the other languages — the
+backend is chosen by the config type, and the queries lazily hit the `GO_`-prefixed graph (so it
+scales to large enterprise modules without materializing the whole program):
+
+```python
+from cldk import CLDK
+from cldk.analysis.commons.backend_config import Neo4jConnectionConfig
+
+analysis = CLDK.go(
+    backend=Neo4jConnectionConfig(
+        uri="bolt://localhost:7687",
+        application_name="my-go-app",  # the --app-name the graph was emitted with
+    ),
+)
+types = analysis.get_types()
+```
+
+> **Go analyzer:** Go is analyzed by the `cango` binary (`codeanalyzer-go`). It emits analysis
+> levels 1–2 only; slicing/CFG/CDG/DDG are not produced, so those accessors are absent rather than
+> present-and-erroring. Until the analyzer's first release is published, resolve the binary with
+> `$CODEANALYZER_GO_BIN` pointing at a local build.
+
+> **Deprecation:** the old `CLDK(language="java").analysis(...)` entry point still works as a thin compatibility shim (it emits a `DeprecationWarning`). Prefer the `CLDK.java()` / `CLDK.python()` / `CLDK.typescript()` / `CLDK.go()` factory methods.
 
 ## Supported Languages & Backends
 
-Each language is analyzed by a dedicated `codeanalyzer-*` engine; CLDK normalizes the result into typed models exposed through the same API. All three also support an optional **read-only Neo4j backend** — pass a `Neo4jConnectionConfig` and the SDK answers the same queries with Cypher over a graph the analyzer populates out of band (`--emit neo4j`).
+Each language is analyzed by a dedicated `codeanalyzer-*` engine; CLDK normalizes the result into typed models exposed through the same API. All of them also support an optional **read-only Neo4j backend** — pass a `Neo4jConnectionConfig` and the SDK answers the same queries with Cypher over a graph the analyzer populates out of band (`--emit neo4j`).
 
 | Language | Analysis engine | What it provides |
 | --- | --- | --- |
 | **Java** | [`codeanalyzer-java`](https://github.com/codellm-devkit/codeanalyzer-java) | WALA + JavaParser. Bytecode-level call graphs, type hierarchies, symbol resolution, CRUD-operation and entry-point detection. Optional read-only **Neo4j** graph backend. |
 | **Python** | [`codeanalyzer-python`](https://github.com/codellm-devkit/codeanalyzer-python) | Jedi with PyCG-based call graphs. Symbol tables, call graphs, and class/method resolution. Optional read-only **Neo4j** graph backend. |
 | **TypeScript / JavaScript** | [`codeanalyzer-typescript`](https://github.com/codellm-devkit/codeanalyzer-typescript) | ts-morph with Jelly-based call graphs. Symbols, call graph, types, decorators, and call sites. Optional read-only **Neo4j** graph backend. |
+| **Go** | [`codeanalyzer-go`](https://github.com/codellm-devkit/codeanalyzer-go) | `go/packages` + `go/types` resolver call graphs. A **type-centric, class-less** facade: structs/interfaces, package-level functions kept distinct from receiver methods, fields, call graph (levels 1–2). Optional read-only **Neo4j** graph backend. |
 
 The backend is selected by the **type** of the `backend=` config you pass to a factory: the in-process analyzer (default) or a `Neo4jConnectionConfig` for the read-only graph backend.
 
