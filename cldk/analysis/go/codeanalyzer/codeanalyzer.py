@@ -25,6 +25,7 @@ is the out-of-band override used today, before the wheel is pinned. ``--analysis
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
@@ -134,12 +135,25 @@ class GoCodeanalyzer(GoAnalysisBackend):
             args += ["-t", str(tf).strip()]
         return args
 
+    @staticmethod
+    def _cached_level(analysis_json_file: Path) -> int | None:
+        """The ``max_level`` of a cached ``analysis.json``, or ``None`` if it is absent, unreadable,
+        or malformed — in which case the caller re-runs rather than trusting it."""
+        try:
+            data = json.loads(analysis_json_file.read_text(encoding="utf-8"))
+            level = data.get("max_level")
+            return int(level) if isinstance(level, int) else None
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+
     def _init_codeanalyzer(self, analysis_level: int) -> GoAnalysis:
         """Run cango and return the validated v2 envelope.
 
         With no cache directory the output is read from the subprocess stdout pipe; with one, the
-        analysis.json is persisted under ``<cache>/go`` and reused unless ``eager_analysis`` or
-        ``target_files`` force a re-run.
+        analysis.json is persisted under ``<cache>/go`` and reused unless ``eager_analysis``,
+        ``target_files``, or a cache **shallower than the requested level** force a re-run. A cache
+        at or above the requested level is reused as-is: the schema is additive (``L1 ⊆ L2``), so a
+        deeper cache already contains everything a shallower request needs.
         """
         output_dir = cache_subdir(self.cache_dir, self.project_dir, "go")
         if output_dir is None:
@@ -152,7 +166,12 @@ class GoCodeanalyzer(GoAnalysisBackend):
 
         output_dir.mkdir(parents=True, exist_ok=True)
         analysis_json_file = output_dir / "analysis.json"
-        needs_run = self.eager_analysis or not analysis_json_file.exists() or bool(self.target_files)
+        # cango caps at 2, so a request above 2 is satisfied by a level-2 cache (never re-runs for a
+        # level it cannot produce). Compare the requested level, capped, against the cached level.
+        requested = min(analysis_level, 2)
+        cached_level = self._cached_level(analysis_json_file) if analysis_json_file.exists() else None
+        stale = cached_level is None or cached_level < requested
+        needs_run = self.eager_analysis or bool(self.target_files) or stale
         if needs_run:
             args = self._argv(analysis_level, output_dir)
             try:

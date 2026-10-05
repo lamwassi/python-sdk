@@ -5,6 +5,7 @@ one method, one package-level function, one call edge); the mocked subprocess wr
 language-keyed cache directory, exactly as cango would at ``-o``.
 """
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -41,6 +42,59 @@ def go_analysis(tmp_path, monkeypatch):
         eager=True,
         backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
     )
+
+
+# -----[ regression: a cache shallower than the request is not reused ]-----
+def _level_aware_run(call_count):
+    """A subprocess.run mock that writes an analysis.json whose max_level matches the `-a` flag it
+    was given, and counts how many times cango was invoked."""
+    base = json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+    def _run(cmd, *args, **kwargs):
+        call_count.append(1)
+        a = int(cmd[cmd.index("-a") + 1]) if "-a" in cmd else 2
+        payload = dict(base)
+        payload["max_level"] = a
+        if a < 2:  # a level-1 payload carries no call graph
+            payload["application"] = {**base["application"], "call_graph": []}
+        text = json.dumps(payload)
+        if "-o" in cmd:
+            out = Path(cmd[cmd.index("-o") + 1])
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "analysis.json").write_text(text, encoding="utf-8")
+        return MagicMock(stdout=text, returncode=0)
+
+    return _run
+
+
+def test_shallow_cache_is_not_reused_for_a_deeper_request(tmp_path, monkeypatch):
+    """A level-1 cache must NOT satisfy a level-2 request: the backend re-runs cango. (The reuse
+    check used to test only file existence, serving the stale shallower result.)"""
+    calls = []
+    monkeypatch.setenv("CODEANALYZER_GO_BIN", "cango")
+    monkeypatch.setattr("subprocess.run", _level_aware_run(calls))
+
+    # First: a level-1 run writes a level-1 cache.
+    CLDK.go(project_path=str(tmp_path), analysis_level=AnalysisLevel.symbol_table, backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)))
+    assert len(calls) == 1
+
+    # Then: a level-2 request over that level-1 cache must re-run (not reuse).
+    a2 = CLDK.go(project_path=str(tmp_path), analysis_level=AnalysisLevel.call_graph, backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)))
+    assert len(calls) == 2, "level-2 request should have re-run cango over the stale level-1 cache"
+    assert a2.backend.analysis.max_level == 2
+
+
+def test_deeper_cache_is_reused_for_a_shallower_request(tmp_path, monkeypatch):
+    """A level-2 cache satisfies a level-1 request without re-running — the schema is additive
+    (L1 subset of L2), so the deeper cache already contains everything."""
+    calls = []
+    monkeypatch.setenv("CODEANALYZER_GO_BIN", "cango")
+    monkeypatch.setattr("subprocess.run", _level_aware_run(calls))
+
+    CLDK.go(project_path=str(tmp_path), analysis_level=AnalysisLevel.call_graph, backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)))
+    assert len(calls) == 1
+    CLDK.go(project_path=str(tmp_path), analysis_level=AnalysisLevel.symbol_table, backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)))
+    assert len(calls) == 1, "level-1 request should reuse the deeper level-2 cache, not re-run"
 
 
 # -----[ regression: the requested analysis level actually reaches cango ]-----
